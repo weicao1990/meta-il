@@ -15,15 +15,14 @@ from scipy import stats
 LOG_SIG_MIN = -20
 LOG_SIG_MAX = 2
 EPS = 1e-5
-SCALE = 1
+SCALE = 10
 CLIP_EPS = 0.1
 
 nb_bins = 10
-state_dim = nb_bins * 2
 
-nb_episodes = 100
-nb_sample_rounds = 10 - 1
-nb_epoches = 5
+nb_episodes = 400
+nb_sample_rounds = 20
+nb_epoches = 3
 
 gamma = 0.98
 lambda_ = 0.95
@@ -88,7 +87,6 @@ class ResampleEnv:
 
     def eval_loss(self, X, y):
         loss_df = pd.DataFrame()
-        loss_df['row_id'] = np.arange(X.shape[0])
         loss_df['label'] = y.values
         loss_df['prob'] = 0
 
@@ -107,7 +105,6 @@ class ResampleEnv:
         pop_dict = loss_df.groupby('bin').size().to_dict()
         pop_arr = np.asarray([pop_dict.get(i, 0.0)
                               for i in range(self.nb_bins)]).astype('float')
-
         pop_arr /= pop_arr.sum()
         return pop_arr
 
@@ -126,13 +123,13 @@ class ResampleEnv:
         train_y = pd.concat(
             [y.loc[index_pos], y.loc[index_neg]], axis=0
         )
-        model = DecisionTreeClassifier(max_depth=5)
+        model = DecisionTreeClassifier(max_depth=5, random_state=0)
         model.fit(train_X, train_y)
         return model
 
     def _rus_index(self, X, y):
         index_pos = X[y == 1].index
-        index_neg = X[y == 0].sample(len(index_pos) * SCALE).index
+        index_neg = X[y == 0].sample(len(index_pos) * SCALE, random_state=0).index
         return index_pos, index_neg
 
     # random under sample
@@ -212,8 +209,8 @@ class ResampleEnv:
         valid_score = self.score(on_eval='valid')
         test_score = self.score(on_eval='test')
 
-        print('Action: {}, Valid Score {}, Test Score {}'.format(
-            mu, valid_score, test_score
+        print('Action: {}, Old Valid Score {}, Valid Score {}, Test Score {}'.format(
+            mu, old_score, valid_score, test_score
         ))
 
         return state, valid_score - old_score
@@ -258,12 +255,13 @@ class ActorCritic(nn.Module):
 
         normal = Normal(mean, std)
 
-        action = torch.tanh(normal.sample())
+        action = normal.sample()
         logprob = normal.log_prob(action)
 
         return action.item(), logprob.item()
 
     def evaluate(self, state, action):
+        # return the value of given state, and the probability of the actor take {action}
         state_value = self.critic(state)
 
         if action is None:
@@ -335,7 +333,11 @@ class PPO:
             ) * advantage
 
             loss = -torch.min(surr1, surr2) + \
-                F.smooth_l1_loss(s_value, td_target.detach())
+                F.l1_loss(s_value, td_target.detach())
+
+            print('Loss part 1: ', -torch.min(surr1, surr2).mean().item())
+            print('Loss part 2: ', F.l1_loss(s_value, td_target.detach()).mean().item())
+            print('Loss sum: ', loss.mean().item())
 
             self.optimizer.zero_grad()
             loss.mean().backward()
